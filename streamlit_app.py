@@ -214,6 +214,10 @@ class YDStats:
             "Number of top posts to show", min_value=1, max_value=500, value=10
         )
         include_nsfw = st.checkbox(f"Include NSFW🌶️ posts in TOP-{num_posts}")
+        if include_nsfw:
+            top_posts_df = nsfw_df.head(num_posts)
+        else:
+            top_posts_df = df[~df["nsfw"]].head(num_posts)
         nsfw = include_nsfw
         top_posts = self.data_transformer.get_top_posts(df, num_posts, nsfw=nsfw)
         metrics = MetricsCalculator.get_orientation_metrics(df)
@@ -304,12 +308,19 @@ class YDStats:
         column_config = {
             "url": st.column_config.LinkColumn("Link", display_text="(.*)")
         }
-        top_posts = self.data_transformer.get_top_posts(df, num_posts)
+        top_posts = self.data_transformer.get_top_posts(df[~df["nsfw"]], num_posts)
         top_posts = self.add_url_column(top_posts)
-        self.render_dataframe(top_posts, f"TOP-{num_posts} posts", "Post ID: (.*)")
-        nsfw_df = self.data_transformer.get_top_posts(nsfw_df, num_posts, nsfw=True)
-        nsfw_df = self.add_url_column(nsfw_df)
-        self.render_dataframe(nsfw_df, f"TOP-{num_posts} NSFW🌶️ posts", "(.*)")
+        nsfw_top_posts = self.data_transformer.get_top_posts(nsfw_df, num_posts, nsfw=True)
+        nsfw_top_posts = self.add_url_column(nsfw_top_posts)
+        if include_nsfw:
+            combined_top_posts = pd.concat([top_posts, nsfw_top_posts], ignore_index=True)
+            combined_top_posts = combined_top_posts.sort_values(by="likes", ascending=False).head(num_posts)
+            combined_top_posts = self.add_url_column(combined_top_posts)
+            self.render_dataframe(combined_top_posts, f"TOP-{num_posts} posts", "(.*)")
+        else:
+            self.render_dataframe(top_posts, f"TOP-{num_posts} posts", "(.*)")
+
+        self.render_dataframe(nsfw_top_posts, f"TOP-{num_posts} NSFW🌶️ posts", "(.*)")
         oldest_posts = self.data_transformer.get_extreme_posts(
             df, num_posts, sort="oldest"
         )
