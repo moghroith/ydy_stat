@@ -4,14 +4,13 @@ from datetime import timedelta, datetime
 import uuid
 import datetime as dt
 import time
-import altair as alt
 import streamlit as st
-import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import pandas as pd
 import pytz
 import requests
+import altair as alt
 
 st.set_page_config(
     page_title="Stat",
@@ -64,7 +63,7 @@ class APIClient:
         except requests.HTTPError:
             return False
 
-    @st.cache_data(ttl=7200)
+    st.cache_data(ttl=7200)
     def get_posts(
         _self, user_id: str, limit: int = DEFAULTSIZE, offset: int = 0
     ) -> List[Dict]:
@@ -139,22 +138,24 @@ class YDStats:
             .str.replace("v2 v2", "v2", regex=False)
         )
 
-    def get_model_info(self) -> Tuple[Optional[str], Optional[str], Optional[float]]:
+    def get_model_info(self) -> Tuple[Optional[str], Optional[str], Optional[float], Optional[float]]:
         if not self.posts:
             st.warning("No posts fetched. Please fetch data first.")
-            return None, None, None
+            return None, None, None, None
         df = pd.DataFrame(self.posts)
         cleaned_model_names = self.clean_names(
             df["model_display_names"].explode().dropna()
         )
         sampling_method_names = df["sampling_method_display_names"].explode().dropna()
         cfg_scales = df["cfg_scales"].explode().dropna()
+        sampling_steps = df["sampling_steps"].explode().dropna()
         if (
             not cleaned_model_names.any()
             and not sampling_method_names.any()
             and not cfg_scales.any()
+            and not sampling_steps.any()
         ):
-            return None, None, None
+            return None, None, None, None
         with pd.option_context("mode.chained_assignment", None):
             most_popular_model = (
                 cleaned_model_names.value_counts().idxmax()
@@ -167,7 +168,8 @@ class YDStats:
                 else None
             )
             avg_cfg_scale = cfg_scales.mean() if cfg_scales.any() else None
-        return most_popular_model, most_popular_sampling_method, avg_cfg_scale
+            avg_sampling_steps = sampling_steps.mean() if sampling_steps.any() else None
+        return most_popular_model, most_popular_sampling_method, avg_cfg_scale, avg_sampling_steps
 
     def add_url_column(self, df):
         new_df = df[["title", "likes", "id"]].copy()
@@ -179,6 +181,12 @@ class YDStats:
         column_config = {
             "url": st.column_config.LinkColumn(
                 "Link", display_text=display_text_pattern
+            ),
+            "title": st.column_config.TextColumn(
+                "Title",
+            ),
+            "likes": st.column_config.TextColumn(
+                "Likes",
             )
         }
         st.header(header_text)
@@ -191,17 +199,11 @@ class YDStats:
 
     def show_posts_below(self, df: pd.DataFrame, threshold: int) -> None:
         filtered_df = df[df["likes"] < threshold]
-        count = len(filtered_df)
-        columns = ["title", "likes", "url"]
         filtered_df = self.add_url_column(filtered_df)
-        st.dataframe(
-            filtered_df[columns],
-            use_container_width=True,
-            column_config={
-                "url": st.column_config.LinkColumn("Link", display_text="(.*)")
-            },
-            hide_index=True,
-        )
+        count = len(filtered_df)
+        header_text = f"Posts with less than {threshold} likes ({count})"
+        self.render_dataframe(filtered_df, header_text, "(.*)")
+
 
     def process_user_data(self):
         if self.posts is None:
@@ -211,7 +213,7 @@ class YDStats:
         sfw_df = df[~df["nsfw"]]
         stats, nsfw_df = self.stats_calc.calculate_stats(df)
         num_posts = st.number_input(
-            "Number of top posts to show", min_value=1, max_value=500, value=10
+            "Number of top posts to show", min_value=1, max_value=500, value=10, help="Number is adjustable and will affect dataframes. (Min 1, Max 500)"
         )
         include_nsfw = st.checkbox(f"Include NSFW🌶️ posts in TOP-{num_posts}")
         if include_nsfw:
@@ -231,9 +233,10 @@ class YDStats:
             model_display_name,
             sampling_method_display_name,
             avg_cfg_scale,
+            avg_sampling_steps,
         ) = self.get_model_info()
         row1, row2, row3 = st.columns(3)
-        new_row1, new_row2, new_row3 = st.columns(3)
+        row4, row5, row6 = st.columns(3)
         with row1:
             st.metric("Total posts", stats["num_posts"])
             st.metric(
@@ -252,6 +255,7 @@ class YDStats:
                 "50% Percentile",
                 f"{p50:,} likes",
                 f"{(df['likes'] > p50).sum():,} posts",
+                help = "This metric shows the median number of likes for all posts, which means that half of the posts have less likes than this value.",
             )
             st.metric("Date with most posts", most_posts_date)
         with row2:
@@ -274,8 +278,9 @@ class YDStats:
                 "75% Percentile ",
                 f"{p75:,} likes",
                 f"{(df['likes'] > p75).sum():,} posts",
+                help = "Upper third quartile. 75% of posts are below this value",
             )
-            st.metric("Mean time between posts", mean_time)
+            st.metric("Mean time between posts", mean_time, help="Shows the average time between your posts.")
         with row3:
             st.metric("Avg likes/post", stats["avg_likes"])
             st.metric(
@@ -290,24 +295,30 @@ class YDStats:
                 "Avg Likes for Square",
                 f"{metrics['avg_likes_by_orientation'].get('square', 0):.2f}",
             )
-            st.metric("Avg posts/day", round(stats["avg_posts_per_day"], 2))
+
+            if stats['nsfw_metrics']['nsfw_count'] > 0:
+                avg_nsfw_likes = stats["nsfw_metrics"]["nsfw_likes"] / stats['nsfw_metrics']['nsfw_count']
+                st.metric("Average NSFW likes🌶️", f"{avg_nsfw_likes:.2f}")
+            else:
+                st.metric("Average NSFW likes🌶️", 0)
             p90 = round(np.percentile(df["likes"], 90), 0)
             st.metric(
                 "90% Percentile",
                 f"{p90:,} likes",
                 f"{(df['likes'] > p90).sum():,} posts",
+                help = "Top-10% of posts value and count",
             )
             st.metric("First Post Date", first_post_date.strftime("%b %d, %Y"))
-        with new_row1:
-            st.metric("Most Used Model:", model_display_name)
-        with new_row2:
+        with row4:
+            st.metric("Most Used Model:", model_display_name, help="This takes into account all album posts and not only first one. Works only for images with shown prompt.")
             st.metric("Most Used Sampling Method:", sampling_method_display_name)
-        with new_row3:
-            st.metric("Longest pause between posts:", longest_pause)
+        with row5:
+            st.metric("Avg posts/day", round(stats["avg_posts_per_day"], 2))
+            st.metric("Longest pause between posts:", longest_pause, help="Identifies the maximum time gap between consecutive posts.")
+        with row6:
+            st.metric("Avg sampling steps", round(avg_sampling_steps or 0, 2))
+            st.metric("Avg cfg scale used", round(avg_cfg_scale or 0, 2))
         # Top charts and data
-        column_config = {
-            "url": st.column_config.LinkColumn("Link", display_text="(.*)")
-        }
         top_posts = self.data_transformer.get_top_posts(df[~df["nsfw"]], num_posts)
         top_posts = self.add_url_column(top_posts)
         nsfw_top_posts = self.data_transformer.get_top_posts(nsfw_df, num_posts, nsfw=True)
@@ -316,11 +327,11 @@ class YDStats:
             combined_top_posts = pd.concat([top_posts, nsfw_top_posts], ignore_index=True)
             combined_top_posts = combined_top_posts.sort_values(by="likes", ascending=False).head(num_posts)
             combined_top_posts = self.add_url_column(combined_top_posts)
-            self.render_dataframe(combined_top_posts, f"TOP-{num_posts} posts", "(.*)")
+            self.render_dataframe(combined_top_posts, f"TOP-{num_posts} posts⭐", "(.*)")
         else:
-            self.render_dataframe(top_posts, f"TOP-{num_posts} posts", "(.*)")
-
-        self.render_dataframe(nsfw_top_posts, f"TOP-{num_posts} NSFW🌶️ posts", "(.*)")
+            self.render_dataframe(top_posts, f"TOP-{num_posts} posts⭐", "(.*)")
+        if not nsfw_top_posts.empty:
+            self.render_dataframe(nsfw_top_posts, f"TOP-{num_posts} NSFW🌶️ posts", "(.*)")
         oldest_posts = self.data_transformer.get_extreme_posts(
             df, num_posts, sort="oldest"
         )
@@ -331,28 +342,39 @@ class YDStats:
         )
         newest_posts = self.add_url_column(newest_posts)
         self.render_dataframe(newest_posts, f"Latest {num_posts} Posts🆕", "(.*)")
-        landscape_posts = self.add_url_column(landscape_posts)
-        self.render_dataframe(
-            landscape_posts, "Landscape Posts (width > height)", "(.*)"
-        )
-        square_posts = self.add_url_column(square_posts)
-        self.render_dataframe(square_posts, "Square Posts (width = height)", "(.*)")
+        if not landscape_posts.empty:
+            landscape_posts = self.add_url_column(landscape_posts)
+            self.render_dataframe(
+                landscape_posts, "Landscape Posts (width > height)", "(.*)"
+            )
+        if not square_posts.empty:
+            square_posts = self.add_url_column(square_posts)
+            self.render_dataframe(square_posts, "Square Posts (width = height)", "(.*)")
         threshold = st.number_input("Max likes", min_value=0, value=10)
-        header_text = f"Posts with less than {threshold} likes"
-        st.header(header_text)
         self.show_posts_below(df, threshold)
-        st.metric(f"Posts below {threshold} likes:", len(df[df["likes"] < threshold]))
         # Plots
-        st.pyplot(Visualizer.plot_likes_per_day(df))
-        st.pyplot(Visualizer.plot_likes_per_hour(df))
-        st.altair_chart(Visualizer.plot_likes_per_week(df))
+        st.header('Total Daily Likes', help="Shows the total likes received for posts made on each day of the week. This number can increase retroactively as older posts receive new likes.", divider='violet')
+        chart = Visualizer.plot_likes_per_day(df)
+        st.altair_chart(chart, use_container_width=True)
+        st.header('Total Hourly Likes', help="Displays the total number of likes received for posts made during each hour of the day. This value can increase retroactively as older posts from that hour receive new likes.", divider='violet')
+        Visualizer.plot_likes_per_hour(df)
+        st.header('Likes per Week', help="Shows the total likes received for posts made in each respective week. This number can increase retroactively if older posts receive new likes.", divider='violet')
+        Visualizer.plot_likes_per_week(df)
+        st.header('Likes per Month', help="Shows the total likes received for posts made in each respective month. This number can increase retroactively if older posts receive new likes.", divider='violet')
+        Visualizer.plot_likes_per_month(df)
+        st.header('Used model distribution', divider='violet')
         model_distribution_plot = self.visualizer.plot_distribution(df, "model")
-        sampling_method_distribution_plot = self.visualizer.plot_distribution(
-            df, "sampling_method"
-        )
-        # Raw data. likes text
-        with st.expander("See raw data likes"):
-            st.write(self.data_transformer.get_weekly_likes(df))
+        st.header('Used sampling method distribution', divider='violet')
+        sampling_method_distribution_plot = self.visualizer.plot_distribution(df, "sampling_method")
+        monthly_likes_df = self.data_transformer.get_monthly_likes(df)
+        with st.expander("See likes by Week/Month"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("Weekly Likes:")
+                st.write(self.data_transformer.get_weekly_likes(df))
+            with col2:
+                st.write("Monthly Likes:")
+                st.write(monthly_likes_df)
 
 
 class StatsCalculator(BaseStatsCalculator):
@@ -401,27 +423,34 @@ class DataTransformer(BaseDataTransformer):
             return False
 
     @staticmethod
-    def get_top_posts(
-        df: pd.DataFrame, n: int, nsfw: Optional[bool] = None
-    ) -> pd.DataFrame:
+    def get_top_posts(df: pd.DataFrame, n: int, nsfw: Optional[bool] = None) -> pd.DataFrame:
         if nsfw is None:
             nsfw = False
-        sfw_df = df[~df["nsfw"]]
-        nsfw_df = df[df["nsfw"]]
-        if nsfw:
-            top_posts = pd.concat([nsfw_df, sfw_df]).nlargest(n, "likes")
-        else:
-            top_posts = sfw_df.nlargest(n, "likes")
-        return top_posts[["title", "likes", "id"]]
+        condition = (~df["nsfw"]) | (df["nsfw"] & nsfw)
+        top_posts = (
+            df.loc[condition, ["title", "likes", "id"]]
+            .sort_values("likes", ascending=False)
+            .head(n)
+        )
+
+        return top_posts
 
     @staticmethod
-    def get_nsfw_metrics(df: pd.DataFrame) -> dict:
-        nsfw_df = df[df["nsfw"]]
+    def get_nsfw_metrics(df: pd.DataFrame) -> Dict[str, float]:
+        if df.empty:
+            return {"nsfw_count": 0, "nsfw_pct": 0, "nsfw_likes": 0}
+
+        nsfw_mask = df["nsfw"]
+        nsfw_count = nsfw_mask.sum()
+        total_count = len(df)
+        nsfw_likes = df.loc[nsfw_mask, "likes"].sum()
+
         return {
-            "nsfw_count": len(nsfw_df),
-            "nsfw_pct": round(len(nsfw_df) / len(df) * 100, 2) if len(df) > 0 else 0,
-            "nsfw_likes": nsfw_df["likes"].sum(),
+            "nsfw_count": nsfw_count,
+            "nsfw_pct": round(nsfw_count / total_count * 100, 2) if total_count > 0 else np.nan,
+            "nsfw_likes": nsfw_likes,
         }
+
 
     def standardize_posts(self, data: List[Dict]) -> List[Dict]:
         timestamps = pd.to_datetime(
@@ -450,6 +479,11 @@ class DataTransformer(BaseDataTransformer):
                     media.get("text_to_image", {}).get("cfg_scale")
                     for media in photo_media
                 ]
+                sampling_steps = [
+                    media.get("text_to_image", {}).get("sampling_steps")
+                    for media in photo_media
+                ]
+
             else:
                 width = post.get("width")
                 height = post.get("height")
@@ -467,6 +501,7 @@ class DataTransformer(BaseDataTransformer):
                 "model_display_names": model_display_names,
                 "sampling_method_display_names": sampling_method_display_names,
                 "cfg_scales": cfg_scales,
+                "sampling_steps": sampling_steps,
             }
             standardized_data.append(standardized_post)
         return standardized_data
@@ -489,22 +524,33 @@ class DataTransformer(BaseDataTransformer):
         return f"{days} d, {hours} h"
 
     @staticmethod
-    def get_weekly_likes(df: pd.DataFrame) -> pd.Series:
+    def get_weekly_likes(df: pd.DataFrame) -> pd.DataFrame:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df.set_index("timestamp", inplace=True)
-        weekly_likes = df.resample("W-Mon").sum()["likes"]
-        last_week_end = weekly_likes.index[-1] + pd.DateOffset(days=6)
-        last_week_end = last_week_end.tz_localize(None)
-        if last_week_end > pd.to_datetime("today"):
-            weekly_likes = weekly_likes.iloc[:-1]
-        end_of_week = weekly_likes.index + pd.DateOffset(days=6)
-        formatted_index = (
-            weekly_likes.index.strftime("%b %d %Y")
+        weekly_likes = df.resample("W-Mon").sum()["likes"].reset_index()
+        weekly_likes["timestamp"] = weekly_likes["timestamp"] - pd.DateOffset(days=7)
+        weekly_likes["week_start"] = weekly_likes["timestamp"]
+        weekly_likes["week_end"] = weekly_likes["timestamp"] + pd.DateOffset(days=6)
+        weekly_likes["week_range"] = (
+            weekly_likes["week_start"].dt.strftime("%b %d")
             + " - "
-            + end_of_week.strftime("%b %d %Y")
+            + weekly_likes["week_end"].dt.strftime("%b %d %Y")
         )
-        weekly_likes.index = formatted_index
+        weekly_likes.index = weekly_likes["week_range"]
+        weekly_likes = weekly_likes[["likes"]]
+
         return weekly_likes
+
+
+    def get_monthly_likes(self, df: pd.DataFrame) -> pd.DataFrame:
+        resampled_data = df.set_index("timestamp").resample("ME").sum()
+        monthly_likes = resampled_data["likes"].reset_index()
+        monthly_likes.columns = ["month", "likes"]
+        monthly_likes["month"] = pd.to_datetime(monthly_likes["month"], utc=True).dt.tz_convert(None)
+        formatted_index = monthly_likes["month"].dt.strftime("%b %Y")
+        monthly_likes.index = formatted_index
+        monthly_likes.drop("month", axis=1, inplace=True)
+        return monthly_likes
 
     @staticmethod
     def get_landscape_posts(df):
@@ -525,11 +571,9 @@ class DataTransformer(BaseDataTransformer):
     def get_mean_time_between_posts(df: pd.DataFrame) -> Optional[str]:
         if len(df) < 2:
             return None
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df = df.set_index("timestamp")
-        time_diff_seconds = df.index.to_series().diff().dt.total_seconds().dropna()
-        mean_elapsed_seconds = time_diff_seconds.mean()
-        mean_elapsed_minutes = round(abs(mean_elapsed_seconds) / 60)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        time_diffs = df['timestamp'].diff().dt.total_seconds().dropna()
+        mean_elapsed_minutes = abs(round(time_diffs.mean() / 60))
 
         return f"{mean_elapsed_minutes} minutes"
 
@@ -545,16 +589,7 @@ class Visualizer:
     def __init__(self, clean_names_func):
         self.clean_names = clean_names_func
 
-    @staticmethod
-    def setup_plot(ax: plt.Axes, title: str, xlabel: str, ylabel: str) -> None:
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.grid(axis="both", color="gray", linestyle="dashed")
-        plt.tight_layout()
-
-    @staticmethod
-    def plot_likes_per_day(df: pd.DataFrame) -> plt.Figure:
+    def plot_likes_per_day(df: pd.DataFrame) -> alt.Chart:
         day_order = [
             "Monday",
             "Tuesday",
@@ -567,50 +602,36 @@ class Visualizer:
         daily_likes = (
             df.groupby(df["timestamp"].dt.day_name())["likes"].sum().reindex(day_order)
         )
-        fig, ax = plt.subplots()
-        sns.barplot(
-            x=daily_likes.index,
-            y=daily_likes,
-            ax=ax,
-            hue=daily_likes.index,
-            palette="viridis",
-            legend=False,
+        chart = (
+            alt.Chart(daily_likes.reset_index())
+            .mark_bar()
+            .encode(
+                x=alt.X("timestamp", title="Day of Week", sort=day_order),
+                y=alt.Y("likes", title="Total Likes"),
+            )
+            .properties(title="Likes per Day of Week")
         )
-        Visualizer.setup_plot(ax, "Likes per Day of Week", "Day of Week", "Total Likes")
-        plt.show()
+        return chart
 
-        return fig
-
-    @staticmethod
-    def plot_likes_per_hour(df: pd.DataFrame) -> plt.Figure:
-        timezones: Dict[str, pytz.timezone] = {
-            "UTC": pytz.utc,
-            "US/East": pytz.timezone("US/Eastern"),
-            "US/Pacific": pytz.timezone("US/Pacific"),
-            "Brazil/East": pytz.timezone("Brazil/East"),
-            "Europe/Berlin,Warsaw,Budapest": pytz.timezone("Europe/Berlin"),
-            "Europe/Kiev": pytz.timezone("Europe/Kiev"),
-            "Asia/Tokyo": pytz.timezone("Asia/Tokyo"),
+    def plot_likes_per_hour(df: pd.DataFrame):
+        timezones = {
+            "UTC": "UTC",
+            "US/East": "US/Eastern",
+            "US/Pacific": "US/Pacific",
+            "Brazil/East": "Brazil/East",
+            "Europe/Berlin,Warsaw,Budapest": "Europe/Berlin",
+            "Europe/Kiev": "Europe/Kiev",
+            "Asia/Tokyo": "Asia/Tokyo",
         }
         tz = st.selectbox("Select Timezone", list(timezones.keys()))
         df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
         df["timestamp"] = df["timestamp"].dt.tz_convert(timezones[tz])
-        hourly_likes = df.groupby(df["timestamp"].dt.hour)["likes"].sum()
-        fig, ax = plt.subplots()
-        sns.barplot(
-            x=hourly_likes.index,
-            y=hourly_likes,
-            ax=ax,
-            hue=hourly_likes.index,
-            palette="viridis",
-            legend=False,
-        )
-        Visualizer.setup_plot(ax, "Likes per Hour", "Hour", "Total Likes")
-        plt.show()
-        return fig
+        hourly_likes = df.groupby(df["timestamp"].dt.hour)["likes"].sum().reset_index()
+        hourly_likes.columns = ["hour", "likes"]
+        fig = st.bar_chart(hourly_likes.set_index("hour")["likes"])
 
     @staticmethod
-    def plot_likes_per_week(df: pd.DataFrame) -> alt.Chart:
+    def plot_likes_per_week(df: pd.DataFrame):
         weekly_likes = df.set_index("timestamp").resample("W-MON").sum()["likes"]
         weekly_likes = weekly_likes.reset_index()
         weekly_likes.columns = ["week", "likes"]
@@ -629,33 +650,32 @@ class Visualizer:
         filtered_df = filtered_df[
             filtered_df["week"].dt.isocalendar().week != current_week + 1
         ]
-        filtered_df["week"] = pd.to_datetime(filtered_df["week"])
-        first_week = filtered_df[filtered_df["week"] == filtered_df["week"].min()]
-        last_week = filtered_df[filtered_df["week"] == filtered_df["week"].max()]
-        middle_weeks = filtered_df[
-            (filtered_df["week"] != filtered_df["week"].min())
-            & (filtered_df["week"] != filtered_df["week"].max())
-        ]
-        filtered_chart = alt.Chart(filtered_df).interactive()
-        if not first_week.empty:
-            filtered_chart = filtered_chart.mark_point(color="red").encode(
-                x="week", y="likes", tooltip=["week", "likes"]
-            )
-        if not last_week.empty:
-            filtered_chart = filtered_chart.mark_point(color="red").encode(
-                x="week", y="likes", tooltip=["week", "likes"]
-            )
-        filtered_chart = filtered_chart.mark_line().encode(
-            x="week", y="likes", tooltip=["week", "likes"]
-        )
-        return filtered_chart
+        st.line_chart(filtered_df.set_index("week")["likes"])
 
-    def plot_distribution(
-        self, df: pd.DataFrame, plot_type: str, min_appearances: int = 10
-    ):
+
+    def plot_likes_per_month(df: pd.DataFrame):
+        resampled_data = df.set_index("timestamp").resample("ME").sum()
+        monthly_likes = resampled_data["likes"].reset_index()
+        monthly_likes.columns = ["month", "likes"]
+        min_timestamp = monthly_likes["month"].min().to_pydatetime().replace(tzinfo=None)
+        max_timestamp = monthly_likes["month"].max().to_pydatetime().replace(tzinfo=None) + pd.offsets.MonthEnd(0)
+        xmin = st.date_input("Start Date", value=min_timestamp, min_value=min_timestamp, max_value=max_timestamp)
+        xmax = st.date_input("End Date", value=max_timestamp, min_value=min_timestamp, max_value=max_timestamp)
+        monthly_likes["month"] = pd.to_datetime(monthly_likes["month"], utc=True).dt.tz_convert(None)
+        mask = (monthly_likes["month"] >= pd.to_datetime(xmin)) & (
+            monthly_likes["month"] <= pd.to_datetime(xmax)
+        )
+        filtered_df = monthly_likes.loc[mask]
+        current_month = datetime.now().month
+        filtered_df = filtered_df[
+            filtered_df["month"].dt.month != current_month
+        ]
+        st.line_chart(filtered_df.set_index("month")["likes"])
+
+
+    def plot_distribution(self, df: pd.DataFrame, plot_type: str, min_appearances: int = 10):
         if df.empty:
-            st.warning("DataFrame is empty. Please check your data.")
-            return
+            return None
         if plot_type == "model":
             column_name = "model_display_names"
             x_label = "Model Name"
@@ -665,37 +685,22 @@ class Visualizer:
             x_label = "Sampling Method"
             title = "Sampling Method Distribution"
         else:
-            st.warning(f"Invalid plot type: {plot_type}")
-            return
+            return None
         flattened_names = df[column_name].explode().dropna()
         cleaned_names = self.clean_names(flattened_names)
         name_counts = cleaned_names.value_counts()
         if name_counts.empty:
-            st.warning(f"No data to visualize for {plot_type} distribution.")
-            return
-        name_counts = name_counts[name_counts >= min_appearances].sort_values(
-            ascending=False
+            return None
+        name_counts = name_counts[name_counts >= min_appearances].reset_index()
+        name_counts.columns = ['name', 'count']
+        chart = alt.Chart(name_counts).mark_bar().encode(
+            x=alt.X('count:Q', title='Count'),
+            y=alt.Y('name:N', sort='-x', title=x_label),
+            tooltip=['name', 'count']
+        ).properties(
+            title=f"{title} (>={min_appearances} uses)"
         )
-        if not name_counts.empty:
-            fig, ax = plt.subplots(figsize=(12, len(name_counts) * 0.5))
-            name_counts.plot(kind="barh", ax=ax, color="skyblue")
-
-            for index, value in enumerate(name_counts):
-                ax.text(
-                    value + 0.1,
-                    index,
-                    f" {value}",
-                    va="center",
-                    color="black",
-                    fontweight="bold",
-                )
-            ax.set_xlabel("Count")
-            ax.set_ylabel(x_label)
-            ax.set_title(f"{title} (>={min_appearances} uses)")
-            st.pyplot(fig)
-        else:
-            st.warning(f"No data to visualize for {plot_type} distribution.")
-
+        st.altair_chart(chart, use_container_width=True)
 
 class MetricsCalculator:
     @staticmethod
@@ -733,7 +738,6 @@ def main():
         end_time = time.perf_counter()
         execution_time = end_time - start_time
         st.write(f"Execution time: {execution_time} seconds")
-
 
 if __name__ == "__main__":
     main()
