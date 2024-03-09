@@ -1,7 +1,5 @@
 streamlit
 pandas
 requests
-matplotlib
 numpy
 pytz
-seaborn
