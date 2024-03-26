@@ -24,49 +24,53 @@ st.write(
 DEFAULTSIZE: int = 500
 
 
+def human_moon(observer):
+    target_date_utc = observer.date
+    target_date_local = ephem.localtime(target_date_utc).date()
+    next_full = ephem.localtime(ephem.next_full_moon(target_date_utc)).date()
+    next_new = ephem.localtime(ephem.next_new_moon(target_date_utc)).date()
+    next_last_quarter = ephem.localtime(ephem.next_last_quarter_moon(target_date_utc)).date()
+    next_first_quarter = ephem.localtime(ephem.next_first_quarter_moon(target_date_utc)).date()
+    previous_full = ephem.localtime(ephem.previous_full_moon(target_date_utc)).date()
+    previous_new = ephem.localtime(ephem.previous_new_moon(target_date_utc)).date()
+    previous_last_quarter = ephem.localtime(ephem.previous_last_quarter_moon(target_date_utc)).date()
+    previous_first_quarter = ephem.localtime(ephem.previous_first_quarter_moon(target_date_utc)).date()
+    if target_date_local in (next_full, previous_full):
+        return 'Full'
+    elif target_date_local in (next_new, previous_new):
+        return 'New'
+    elif target_date_local in (next_first_quarter, previous_first_quarter):
+        return 'First Quarter'
+    elif target_date_local in (next_last_quarter, previous_last_quarter):
+        return 'Last Full Quarter'
+    elif previous_new < next_first_quarter < next_full < next_last_quarter < next_new:
+        return 'Waxing Crescent'
+    elif previous_first_quarter < next_full < next_last_quarter < next_new < next_first_quarter:
+        return 'Waxing Gibbous'
+    elif previous_full < next_last_quarter < next_new < next_first_quarter < next_full:
+        return 'Waning Gibbous'
+    elif previous_last_quarter < next_new < next_first_quarter < next_full < next_last_quarter:
+        return 'Waning Crescent'
+
 def get_moon_phase(date):
     if isinstance(date, str):
         return date
     else:
         moon_phase_emojis = {
-            "New Moon": "🌑 New Moon",
-            "Waxing Crescent": "🌒 Waxing Crescent",
+            "Full": "🌕 Full Moon",
+            "New": "🌑 New Moon",
             "First Quarter": "🌓 First Quarter",
+            "Last Full Quarter": "🌗 Last Quarter",
+            "Waxing Crescent": "🌒 Waxing Crescent",
             "Waxing Gibbous": "🌔 Waxing Gibbous",
-            "Full Moon": "🌕 Full Moon",
             "Waning Gibbous": "🌖 Waning Gibbous",
-            "Last Quarter": "🌗 Last Quarter",
             "Waning Crescent": "🌘 Waning Crescent"
         }
         observer = ephem.Observer()
         observer.date = ephem.Date(date)
-        moon = ephem.Moon(observer)
-        next_new_moon = ephem.Date(ephem.next_new_moon(observer.date))
-        next_full_moon = ephem.Date(ephem.next_full_moon(observer.date))
-        if observer.date < next_new_moon:
-            age = (observer.date - ephem.Date(ephem.previous_new_moon(observer.date))) / (next_new_moon - ephem.Date(ephem.previous_new_moon(observer.date)))
-            phase = age * 360
-        else:
-            age = (observer.date - next_new_moon) / (next_full_moon - next_new_moon)
-            phase = (age + 0.5) * 360
-        if phase < 22.5:
-            phase_name = "New Moon"
-        elif phase < 67.5:
-            phase_name = "Waxing Crescent"
-        elif phase < 112.5:
-            phase_name = "First Quarter"
-        elif phase < 157.5:
-            phase_name = "Waxing Gibbous"
-        elif phase < 202.5:
-            phase_name = "Full Moon"
-        elif phase < 247.5:
-            phase_name = "Waning Gibbous"
-        elif phase < 292.5:
-            phase_name = "Last Quarter"
-        else:
-            phase_name = "Waning Crescent"
-        return moon_phase_emojis[phase_name]
-
+        moon_phase = human_moon(observer)
+        return moon_phase_emojis[moon_phase]
+        
 class BaseStatsCalculator(ABC):
     @abstractmethod
     def calculate_stats(self, df: pd.DataFrame) -> Tuple[Dict, pd.DataFrame]:
