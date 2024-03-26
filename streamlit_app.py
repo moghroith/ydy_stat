@@ -38,11 +38,7 @@ def get_moon_phase(date):
             "Last Quarter": "🌗 Last Quarter",
             "Waning Crescent": "🌘 Waning Crescent"
         }
-        if isinstance(date, pd.Timestamp):
-            date = date.to_pydatetime()
         observer = ephem.Observer()
-        observer.lat = '-34.9011'
-        observer.lon = '-56.1645'
         observer.date = ephem.Date(date)
         moon = ephem.Moon(observer)
         next_new_moon = ephem.Date(ephem.next_new_moon(observer.date))
@@ -70,7 +66,6 @@ def get_moon_phase(date):
         else:
             phase_name = "Waning Crescent"
         return moon_phase_emojis[phase_name]
-
 
 class BaseStatsCalculator(ABC):
     @abstractmethod
