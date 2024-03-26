@@ -1,3 +1,4 @@
+import ephem
 from typing import Tuple, List, Dict, Optional
 from abc import ABC, abstractmethod
 from datetime import timedelta, datetime
@@ -21,6 +22,54 @@ st.write(
 )
 
 DEFAULTSIZE: int = 500
+
+
+def get_moon_phase(date):
+    if isinstance(date, str):
+        return date
+    else:
+        moon_phase_emojis = {
+            "New Moon": "🌑 New Moon",
+            "Waxing Crescent": "🌒 Waxing Crescent",
+            "First Quarter": "🌓 First Quarter",
+            "Waxing Gibbous": "🌔 Waxing Gibbous",
+            "Full Moon": "🌕 Full Moon",
+            "Waning Gibbous": "🌖 Waning Gibbous",
+            "Last Quarter": "🌗 Last Quarter",
+            "Waning Crescent": "🌘 Waning Crescent"
+        }
+        if isinstance(date, pd.Timestamp):
+            date = date.to_pydatetime()
+        observer = ephem.Observer()
+        observer.lat = '-34.9011'
+        observer.lon = '-56.1645'
+        observer.date = ephem.Date(date)
+        moon = ephem.Moon(observer)
+        next_new_moon = ephem.Date(ephem.next_new_moon(observer.date))
+        next_full_moon = ephem.Date(ephem.next_full_moon(observer.date))
+        if observer.date < next_new_moon:
+            age = (observer.date - ephem.Date(ephem.previous_new_moon(observer.date))) / (next_new_moon - ephem.Date(ephem.previous_new_moon(observer.date)))
+            phase = age * 360
+        else:
+            age = (observer.date - next_new_moon) / (next_full_moon - next_new_moon)
+            phase = (age + 0.5) * 360
+        if phase < 22.5:
+            phase_name = "New Moon"
+        elif phase < 67.5:
+            phase_name = "Waxing Crescent"
+        elif phase < 112.5:
+            phase_name = "First Quarter"
+        elif phase < 157.5:
+            phase_name = "Waxing Gibbous"
+        elif phase < 202.5:
+            phase_name = "Full Moon"
+        elif phase < 247.5:
+            phase_name = "Waning Gibbous"
+        elif phase < 292.5:
+            phase_name = "Last Quarter"
+        else:
+            phase_name = "Waning Crescent"
+        return moon_phase_emojis[phase_name]
 
 
 class BaseStatsCalculator(ABC):
@@ -204,6 +253,19 @@ class YDStats:
         self.render_dataframe(filtered_df, header_text, "(.*)")
 
 
+    def plot_moon_phase_frequency(self, df):
+        moon_phase_counts = df["moon_phase"].value_counts().reset_index()
+        moon_phase_counts.columns = ["moon_phase", "count"]
+        chart = alt.Chart(moon_phase_counts).mark_bar().encode(
+            x=alt.X("count", title="Number of Posts"),
+            y=alt.Y("moon_phase", title="Moon Phase", sort=None, axis=alt.Axis(labelFontSize=12)),
+            tooltip=["moon_phase", "count"]
+        ).properties(
+            title="Post Frequency by Moon Phase"
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+
     def process_user_data(self):
         if self.posts is None:
             st.warning("No posts fetched. Please fetch data first.")
@@ -366,6 +428,8 @@ class YDStats:
         st.header('Used sampling method distribution', divider='violet')
         sampling_method_distribution_plot = self.visualizer.plot_distribution(df, "sampling_method")
         monthly_likes_df = self.data_transformer.get_monthly_likes(df)
+        st.header('🌚Post frequency by Moon Phase🌝', divider='violet')
+        self.plot_moon_phase_frequency(df)
         with st.expander("See likes by Week/Month"):
             col1, col2 = st.columns(2)
             with col1:
@@ -458,6 +522,7 @@ class DataTransformer(BaseDataTransformer):
         standardized_data = []
         for post, timestamp in zip(data, timestamps):
             photo_media = post.get("photo_media", [])
+            moon_phase = get_moon_phase(timestamp)
 
             if photo_media is not None:
                 width = (
@@ -501,6 +566,7 @@ class DataTransformer(BaseDataTransformer):
                 "sampling_method_display_names": sampling_method_display_names,
                 "cfg_scales": cfg_scales,
                 "sampling_steps": sampling_steps,
+                "moon_phase": moon_phase,
             }
             standardized_data.append(standardized_post)
         return standardized_data
@@ -740,3 +806,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
