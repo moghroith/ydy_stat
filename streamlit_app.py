@@ -25,6 +25,7 @@ DEFAULTSIZE: int = 500
 SPECIAL_USER_IDS = [
     "0b56f7c9-b80a-4b3e-9a9f-36b038898b1b",
     "24646f3c-0deb-4446-a91d-d6a283c60e42",
+    "345591d2-efcc-4c8f-bb00-7fd19bb54927",
 ]
 SPECIAL_SIZE: int = 20
 
