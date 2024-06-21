@@ -25,7 +25,6 @@ DEFAULTSIZE: int = 500
 SPECIAL_USER_IDS = [
     "0b56f7c9-b80a-4b3e-9a9f-36b038898b1b",
     "24646f3c-0deb-4446-a91d-d6a283c60e42",
-    "345591d2-efcc-4c8f-bb00-7fd19bb54927",
 ]
 SPECIAL_SIZE: int = 20
 
@@ -117,6 +116,9 @@ class BaseDataTransformer(ABC):
     ) -> pd.DataFrame:
         pass
 
+secrets = st.secrets["secrets"]
+access_token = secrets["access_token"]
+session_uuid = secrets["session_uuid"]
 
 class APIClient:
     def __init__(self, user_id: str, data_transformer: "BaseDataTransformer"):
@@ -126,6 +128,12 @@ class APIClient:
         self._user_id = user_id
         self.data_transformer = data_transformer
         self.session = requests.Session()
+        self._initialize_session()
+
+    def _initialize_session(self):
+        jar = requests.cookies.RequestsCookieJar()
+        jar.set("access_token", access_token)
+        self.session.cookies = jar
 
     def _format_api_url(self, user_id: str) -> str:
         return self._API_URL.format(user_id=user_id)
@@ -222,33 +230,42 @@ class YDStats:
         if not self.posts:
             st.warning("No posts fetched. Please fetch data first.")
             return None, None, None, None
+
         df = pd.DataFrame(self.posts)
+        
+        if 'model_display_names' not in df.columns or 'sampling_method_display_names' not in df.columns:
+            st.warning("Required data fields are missing.")
+            return None, None, None, None
+        
         cleaned_model_names = self.clean_names(
             df["model_display_names"].explode().dropna()
         )
         sampling_method_names = df["sampling_method_display_names"].explode().dropna()
         cfg_scales = df["cfg_scales"].explode().dropna()
         sampling_steps = df["sampling_steps"].explode().dropna()
+
         if (
-            not cleaned_model_names.any()
-            and not sampling_method_names.any()
-            and not cfg_scales.any()
-            and not sampling_steps.any()
+            cleaned_model_names.empty
+            and sampling_method_names.empty
+            and cfg_scales.empty
+            and sampling_steps.empty
         ):
             return None, None, None, None
+
         with pd.option_context("mode.chained_assignment", None):
             most_popular_model = (
                 cleaned_model_names.value_counts().idxmax()
-                if cleaned_model_names.any()
+                if not cleaned_model_names.empty
                 else None
             )
             most_popular_sampling_method = (
                 sampling_method_names.value_counts().idxmax()
-                if sampling_method_names.any()
+                if not sampling_method_names.empty
                 else None
             )
-            avg_cfg_scale = cfg_scales.mean() if cfg_scales.any() else None
-            avg_sampling_steps = sampling_steps.mean() if sampling_steps.any() else None
+            avg_cfg_scale = cfg_scales.mean() if not cfg_scales.empty else None
+            avg_sampling_steps = sampling_steps.mean() if not sampling_steps.empty else None
+
         return (
             most_popular_model,
             most_popular_sampling_method,
@@ -256,13 +273,32 @@ class YDStats:
             avg_sampling_steps,
         )
 
+    def _convert_timestamp(self, df):
+        if 'timestamp' in df.columns:
+            if not df.empty:  
+                try:
+                    pd.to_datetime(df['timestamp'].iloc[0], unit='ms')
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                except (ValueError, TypeError):
+                    df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df['timestamp'] = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                df['timestamp'] = pd.Series([], dtype="datetime64[ns]")
+        return df
+
+
     def add_url_column(self, df):
-        new_df = df[["title", "likes", "id"]].copy()
+        df = df.copy()
+        df = self._convert_timestamp(df)
+
+        new_df = df[["title", "likes", "id", "content_rating", "timestamp"]].copy()
         new_df = new_df.convert_dtypes()
         new_df["url"] = "https://yodayo.com/posts/" + new_df["id"]
         return new_df
 
     def render_dataframe(self, df, header_text, display_text_pattern):
+        df = self._convert_timestamp(df)
+
         column_config = {
             "url": st.column_config.LinkColumn(
                 "Link", display_text=display_text_pattern
@@ -273,15 +309,21 @@ class YDStats:
             "likes": st.column_config.TextColumn(
                 "Likes",
             ),
+            "timestamp": st.column_config.TextColumn(
+                "Timestamp",
+            ),
+            "content_rating": st.column_config.TextColumn(
+                "Content Rating",
+            ),
         }
         st.header(header_text)
         st.dataframe(
-            df[["title", "likes", "url"]],
+            df[["title", "likes", "url", "content_rating", "timestamp"]],
             use_container_width=True,
             hide_index=True,
             column_config=column_config,
         )
-
+        
     def show_posts_below(self, df: pd.DataFrame, threshold: int) -> None:
         filtered_df = df[df["likes"] < threshold]
         filtered_df = self.add_url_column(filtered_df)
@@ -320,7 +362,7 @@ class YDStats:
         num_posts = st.number_input(
             "Number of top posts to show",
             min_value=1,
-            max_value=2000,
+            max_value=3500,
             value=10,
             help="Number is adjustable and will affect dataframes. (Min 1, Max 2000)",
         )
@@ -451,7 +493,7 @@ class YDStats:
         nsfw_top_posts = self.add_url_column(nsfw_top_posts)
         if include_nsfw:
             combined_top_posts = pd.concat(
-                [top_posts, nsfw_top_posts], ignore_index=True
+                [top_posts, nsfw_top_posts], ignore_index=False
             )
             combined_top_posts = combined_top_posts.sort_values(
                 by="likes", ascending=False
@@ -532,13 +574,12 @@ class YDStats:
 class StatsCalculator(BaseStatsCalculator):
     def calculate_stats(self, df: pd.DataFrame) -> Tuple[Dict, pd.DataFrame]:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df = df.set_index("timestamp")
         num_posts = df.shape[0]
         total_likes = df["likes"].sum()
         avg_likes = round(df["likes"].mean(), 2)
         median_likes = df["likes"].median()
-        start_date = df.index.min().floor("D")
-        end_date = df.index.max().ceil("D")
+        start_date = df["timestamp"].min().floor("D")
+        end_date = df["timestamp"].max().ceil("D")
         num_days = (end_date - start_date).days + 1
         avg_posts_per_day = num_posts / num_days
         nsfw_df = df[df["nsfw"]]
@@ -580,14 +621,18 @@ class DataTransformer(BaseDataTransformer):
     ) -> pd.DataFrame:
         if nsfw is None:
             nsfw = False
+
+        if 'timestamp' not in df.columns:
+            df['timestamp'] = pd.NaT
+
         condition = (~df["nsfw"]) | (df["nsfw"] & nsfw)
         top_posts = (
-            df.loc[condition, ["title", "likes", "id"]]
+            df.loc[condition, ["title", "likes", "id", "content_rating", "timestamp"]]
             .sort_values("likes", ascending=False)
             .head(n)
         )
-
         return top_posts
+
 
     @staticmethod
     def get_nsfw_metrics(df: pd.DataFrame) -> Dict[str, float]:
@@ -612,17 +657,14 @@ class DataTransformer(BaseDataTransformer):
             [post.get("created_at") for post in data], format="%Y-%m-%dT%H:%M:%S.%fZ"
         )
         standardized_data = []
+
         for post, timestamp in zip(data, timestamps):
             photo_media = post.get("photo_media", [])
             moon_phase = get_moon_phase(timestamp)
-
-            if photo_media is not None:
-                width = (
-                    photo_media[0].get("width") if photo_media else post.get("width")
-                )
-                height = (
-                    photo_media[0].get("height") if photo_media else post.get("height")
-                )
+            
+            if photo_media:
+                width = photo_media[0].get("width", post.get("width"))
+                height = photo_media[0].get("height", post.get("height"))
                 model_display_names = [
                     media.get("text_to_image", {}).get("model_display_name")
                     for media in photo_media
@@ -639,19 +681,21 @@ class DataTransformer(BaseDataTransformer):
                     media.get("text_to_image", {}).get("sampling_steps")
                     for media in photo_media
                 ]
-
             else:
                 width = post.get("width")
                 height = post.get("height")
                 model_display_names = []
                 sampling_method_display_names = []
                 cfg_scales = []
+                sampling_steps = []
+
             standardized_post = {
                 "id": post.get("uuid"),
                 "likes": post.get("likes"),
                 "timestamp": timestamp,
                 "title": post.get("title"),
                 "nsfw": post.get("nsfw"),
+                "content_rating": post.get("content_rating"),
                 "width": width,
                 "height": height,
                 "model_display_names": model_display_names,
@@ -661,7 +705,9 @@ class DataTransformer(BaseDataTransformer):
                 "moon_phase": moon_phase,
             }
             standardized_data.append(standardized_post)
+            
         return standardized_data
+
 
     @staticmethod
     def get_longest_pause_between_posts(df: pd.DataFrame) -> Optional[str]:
@@ -738,7 +784,7 @@ class DataTransformer(BaseDataTransformer):
     def get_extreme_posts(
         self, df: pd.DataFrame, n: int, sort: str = "oldest"
     ) -> pd.DataFrame:
-        columns = ["title", "likes", "id", "timestamp"]
+        columns = ["title", "likes", "id", "content_rating", "timestamp"]
         sorted_df = df.sort_values("timestamp", ascending=(sort == "oldest"))
         return sorted_df.head(n)[columns]
 
